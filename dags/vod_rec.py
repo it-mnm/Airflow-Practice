@@ -6,6 +6,7 @@ import json
 import pandas as pd
 import numpy as np
 import logging
+import pendulum
 from datetime import datetime, timedelta
 from tempfile import NamedTemporaryFile
 from airflow import DAG
@@ -22,6 +23,8 @@ default_args = {
     'retries': 5,
     'retry_delay': timedelta(minutes=10)
 }
+
+local_tz = pendulum.timezone("Asia/Seoul")
 
 # MySQL 데이터베이스로부터 데이터를 가져오는 함수
 def mysql_hook(**context):
@@ -165,7 +168,7 @@ def convert_to_json(**context):
 with DAG(
     dag_id="vod_rec",
     default_args=default_args,
-    start_date=datetime(2023, 12, 17),
+    start_date=datetime(2023, 12, 11, tzinfo=local_tz),
     schedule_interval='0 0 * * 1'  # 매주 월요일마다 실행
 ) as dag:
     data_query = PythonOperator(
