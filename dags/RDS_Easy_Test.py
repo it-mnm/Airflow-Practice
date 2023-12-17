@@ -25,7 +25,7 @@ dag = DAG(
 )
 
 def extract_rds_data(**kwargs):
-    mysql_hook = MySqlHook(mysql_conn_id='your_mysql_conn_id')  # Replace 'your_mysql_conn_id' with your MySQL connection ID
+    mysql_hook = MySqlHook(mysql_conn_id='mysql-01')  # Replace 'your_mysql_conn_id' with your MySQL connection ID
 
     # Query MySQL data
     connection = mysql_hook.get_conn()

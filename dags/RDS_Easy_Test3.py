@@ -1,3 +1,5 @@
+#RDS 데이터를 가져와 전처리 수행 후 머신러닝적용 및 성능평가
+
 import csv
 import pandas as pd
 import numpy as np
@@ -121,7 +123,7 @@ def model_running(**context):
             return rmse 
     
     svd_model = SVDRecommendationModel(train, test)
-    
+
     # 성능 구하는 코드
     precision, recall = svd_model.evaluate(test)
 
