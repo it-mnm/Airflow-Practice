@@ -30,6 +30,20 @@ def mysql_hook(**context):
     cont_log = pd.read_sql('select * from contlog', connection)
     vod_log = pd.read_sql('select * from vods_sumut', connection)
     vod_info = pd.read_sql('select * from vodinfo', connection)
+    context["task_instance"].xcom_push(key="cont_log", value=cont_log)
+    context["task_instance"].xcom_push(key="vod_log", value=vod_log)
+    context["task_instance"].xcom_push(key="vod_info", value=vod_info)
+    connection.close()
+
+
+
+def data_preprocessing(**context):
+    logging.info("데이터 전처리")
+
+    #mysql_hook 함수에서 사용했던 변수 불러오기
+    cont_log = context["task_instance"].xcom_pull(task_ids="data_query", key="cont_log")
+    vod_log = context["task_instance"].xcom_pull(task_ids="data_query", key="vod_log")
+    vod_info = context["task_instance"].xcom_pull(task_ids="data_query", key="vod_info")
 
     # e_bool == 0 인 데이터만 뽑기
     vod_log = vod_log[vod_log['e_bool']==0][['subsr_id', 'program_id', 'program_name', 'episode_num', 'log_dt', 'use_tms', 'disp_rtm_sec', 'count_watch']]
@@ -52,12 +66,12 @@ def mysql_hook(**context):
     context["task_instance"].xcom_push(key="test", value=test)
 
 
-    connection.close()
+
         
 
 def model_running(**context):
     # 모델 함수
-    logging.info("모델 돌리기")
+    logging.info("모델 적용 및 성능평가")
     train = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="train")
     test = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="test")
 
@@ -139,14 +153,18 @@ with DAG(
     start_date=datetime(2022, 4, 30),
     schedule_interval='@once'
 ) as dag:
-    task1 = PythonOperator(
-        task_id="data_preprocessing",
+    data_query = PythonOperator(
+        task_id="data_query",
         python_callable=mysql_hook
     )
-    task2 = PythonOperator(
+    data_preprocess = PythonOperator(
+    task_id="data_preprocessing",
+    python_callable=data_preprocessing
+    )
+    model_run = PythonOperator(
         task_id="model_running_and_create",
         python_callable=model_running
     )
 
 
-    task1 >> task2
+    data_query >> data_preprocess >> model_run
