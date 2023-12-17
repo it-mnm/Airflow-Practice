@@ -1,4 +1,4 @@
-#RDS 의 컬럼 내용을 csv파일로 만들어서 S3에 업로드
+#RDS 의 컬럼 내용을 csv파일로 로컬에 저장 및 S3에 복사해서 업로드
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.hooks.mysql_hook import MySqlHook
