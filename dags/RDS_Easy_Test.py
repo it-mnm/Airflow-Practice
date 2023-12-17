@@ -1,3 +1,6 @@
+#RDS의 MySQL에서 쿼리문으로 Database목록을 조회
+#조회된 목록을 CSV 파일로 S3 버킷 내부에 바로 저장
+
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
@@ -22,7 +25,7 @@ dag = DAG(
 )
 
 def extract_rds_data(**kwargs):
-    mysql_hook = MySqlHook(mysql_conn_id='mysql-01')  # Replace 'your_mysql_conn_id' with your MySQL connection ID
+    mysql_hook = MySqlHook(mysql_conn_id='your_mysql_conn_id')  # Replace 'your_mysql_conn_id' with your MySQL connection ID
 
     # Query MySQL data
     connection = mysql_hook.get_conn()
@@ -37,7 +40,7 @@ def extract_rds_data(**kwargs):
 
     # Write CSV content to S3
     s3_hook = S3Hook(aws_conn_id='aws_default')
-    s3_hook.load_string(csv_content, 'airflowexample/databases.csv')
+    s3_hook.load_string(csv_content, 'bucketname/databases.csv') # Replace 'bucketname' with your S3 bucket name
 
 
 start_task = DummyOperator(
