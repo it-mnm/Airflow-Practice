@@ -151,7 +151,7 @@ with DAG(
     dag_id="ex_mysql_to_csv3",
     default_args=default_args,
     start_date=datetime(2022, 4, 30),
-    schedule_interval='@once'
+    schedule_interval='*/1 * * * *'  # 매 1분마다 실행
 ) as dag:
     data_query = PythonOperator(
         task_id="data_query",
