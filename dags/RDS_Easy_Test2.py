@@ -1,3 +1,5 @@
+#RDS 데이터 가져와서 전처리 수행
+
 import csv
 import pandas as pd
 import numpy as np
