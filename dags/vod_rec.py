@@ -158,7 +158,7 @@ def convert_to_json(**context):
     # DataFrame을 JSON으로 변환
     # Convert the result to CSV format
     logging.info(recommendation)
-    json_data = recommendation.to_json(orient='records')
+    json_data = recommendation.to_json(orient='split')
     logging.info(json_data)
     # Write CSV content to S3
     s3_hook = S3Hook(aws_conn_id='aws_default')
