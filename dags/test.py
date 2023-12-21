@@ -91,6 +91,24 @@ def mysql_hook(**context):
 
     connection.close()
 
+# MySQL 데이터베이스로부터 데이터를 가져오는 함수
+def mysql_hook2(**context):
+    current_week = context["task_instance"].xcom_pull(task_ids="week_info", key="current_week")
+
+    # hook 내용 작성
+    logging.info("데이터베이스에서 데이터 가져오기")
+    
+    hook = MySqlHook.get_hook(conn_id="mysql-01")  # 미리 정의한 MySQL connection 적용
+    connection = hook.get_conn()  # connection 하기
+    cursor = connection.cursor()  # cursor 객체 만들기
+    cursor.execute("use vod_rec")  # SQL 문 수행
+
+    vods = pd.read_sql(f'select * from vods_sumut where week(log_dt)={current_week}', connection)
+    logging.info(vods)
+
+
+    connection.close()
+
 
 
 
@@ -109,7 +127,12 @@ with DAG(
         task_id="data_query",
         python_callable=mysql_hook
     )
+    data_query2 = PythonOperator(
+        task_id="data_query2",
+        python_callable=mysql_hook2
+    )
 
 
 
     week_info >> data_query
+    week_info >> data_query2
