@@ -43,22 +43,22 @@ def week_info_s3(**context):
     #파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 읽어오기
     if not file_exists:
         logging.info("*****파일 존재하지 않으므로 새로생성*****")
-        new_metrics = {"columns": ["week_info"],"values": [31]}
-        updated_json_data = json.dumps(new_metrics, indent=2)
-        current_week=new_metrics["values"][0]
+        new_json = {"columns": ["week_info"],"values": [31]}
+        updated_json_data = json.dumps(new_json, indent=2)
+        current_week=new_json["values"][0]
         s3_hook.load_string(updated_json_data, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
 
     else:
         logging.info("*****파일 존재. 기존 파일 읽어옴*****")
         existing_data = s3_hook.read_key('week_info/week_info.json', 'hello00.net-airflow')
-        existing_metrics = json.loads(existing_data)
+        existing_json = json.loads(existing_data)
         #이전 주차 정보 읽기
-        current_week=existing_metrics["values"][0]
+        current_week=existing_json["values"][0]
 
         #기존 주차 정보 업데이트
-        existing_metrics["values"] = [current_week + 1]
-        updated_json_data = json.dumps(existing_metrics, indent=2)
-        s3_hook.load_string(updated_json_data, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
+        existing_json["values"] = [current_week + 1]
+        updated_json = json.dumps(existing_json, indent=2)
+        s3_hook.load_string(updated_json, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
     
     logging.info("*****현재 week 정보 받아옴*****")
 
@@ -305,16 +305,12 @@ def model_running(**context):
 def convert_to_json(**context):
     s3_hook = S3Hook(aws_conn_id='aws_default')
     current_week = context["task_instance"].xcom_pull(task_ids="week_info", key="current_week")
-
-    # current_year = datetime.now().year
-    # # 주차의 첫째날과 마지막날을 계산
-    # first_day_of_week = datetime.strptime(f'{current_year}-W{current_week}-1', "%Y-W%W-%w").date()
-    # last_day_of_week = first_day_of_week + timedelta(days=6)
-
-
-    # current_week = f"{first_day_of_week.strftime('%Y.%m.%d')}~{last_day_of_week.strftime('%Y.%m.%d')}"
-
-    # logging.info(f"{current_week} 주의 메트릭 처리")
+    current_year = datetime.now().year
+    # 주차의 첫째날과 마지막날을 계산
+    first_day_of_week = datetime.strptime(f'{current_year}-W{current_week-1}-0', "%Y-W%W-%w").date()
+    last_day_of_week = first_day_of_week + timedelta(days=6)
+    current_week = f"{first_day_of_week.strftime('%Y.%m.%d')} ~ {last_day_of_week.strftime('%Y.%m.%d')}"
+    logging.info(f"{current_week} 날짜 삽입")
 
     # Metrics to append
     metrics = [
@@ -336,28 +332,48 @@ def convert_to_json(**context):
         file_exists = s3_hook.check_for_key(f'{metric_name.lower()}.json', 'hello00.net-airflow')
 
 
-        #파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 기존 파일에 새로운 데이터 추가
+        # 파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 기존 파일에 새로운 데이터 추가
         if not file_exists:
-            # If the file doesn't exist, create a new structure
             new_metrics = {"columns": [[metric_name]], "values": [[metric_value]]}
             updated_json_data = json.dumps(new_metrics, indent=2)
         else:
-            # Retrieve existing data from S3
             existing_data = s3_hook.read_key(f'{metric_name.lower()}.json', 'hello00.net-airflow')
             existing_metrics = json.loads(existing_data)
 
-            # Append new metric to existing data
+            # 새로운 데이터 추가
             existing_metrics["columns"] = [metric_name]
             existing_metrics["values"].append([metric_value])
 
-            # Convert the updated data to JSON
+            # Json으로 변환
             updated_json_data = json.dumps(existing_metrics, indent=2)
 
-        # Save back to S3
-        s3_hook.load_string(updated_json_data, f'{metric_name.lower()}.json', 'hello00.net-airflow', replace=True)
+        # S3에 다시 저장
+        s3_hook.load_string(updated_json_data, f'model_accuracy/{metric_name.lower()}.json', 'hello00.net-airflow', replace=True)
 
 
+# 피클 파일 불러오기
+def pickle_load():
+    s3_hook = S3Hook(aws_conn_id='aws_default')
 
+    # S3에 파일이 존재하는지 확인
+    file_exists = s3_hook.check_for_key('model_genre.pkl', 'hello00.net-model')
+
+    logging.info("*****pickle 파일 읽어오기*****")
+    logging.info(file_exists)
+
+    existing_data = s3_hook.read_key('model_genre.pkl', 'hello00.net-model')
+    existing_metrics = json.loads(existing_data)
+    #이전 주차 정보 읽기
+    current_week=existing_metrics["values"][0]
+
+    #기존 주차 정보 업데이트
+    existing_metrics["values"] = [current_week + 1]
+    updated_json_data = json.dumps(existing_metrics, indent=2)
+    s3_hook.load_string(updated_json_data, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
+    
+    logging.info("*****현재 week 정보 받아옴*****")
+
+    logging.info(current_week)
 
 # DAG 설정
 with DAG(
