@@ -329,7 +329,7 @@ def convert_to_json(**context):
         metric_value = metric["value"]
 
         # S3에 파일이 존재하는지 확인
-        file_exists = s3_hook.check_for_key(f'{metric_name.lower()}.json', 'hello00.net-airflow')
+        file_exists = s3_hook.check_for_key(f'model_accuracy/{metric_name.lower()}.json', 'hello00.net-airflow')
 
 
         # 파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 기존 파일에 새로운 데이터 추가
@@ -337,7 +337,7 @@ def convert_to_json(**context):
             new_metrics = {"columns": [[metric_name]], "values": [[metric_value]]}
             updated_json_data = json.dumps(new_metrics, indent=2)
         else:
-            existing_data = s3_hook.read_key(f'{metric_name.lower()}.json', 'hello00.net-airflow')
+            existing_data = s3_hook.read_key(f'model_accuracy/{metric_name.lower()}.json', 'hello00.net-airflow')
             existing_metrics = json.loads(existing_data)
 
             # 새로운 데이터 추가
