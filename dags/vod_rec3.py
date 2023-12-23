@@ -404,8 +404,8 @@ def convert_to_json(**context):
 with DAG(
     dag_id="VOD_Recommendation",
     default_args=default_args,
-    start_date=datetime(2023, 12, 11, tzinfo=local_tz),
-    schedule_interval='0 0 * * 1'  # 매주 월요일 00:00 마다 실행
+    start_date=datetime(2023, 12, 22, tzinfo=local_tz),
+    schedule_interval='25 15 * * *' 
 ) as dag:
     week_info = PythonOperator(
     task_id="week_info",
