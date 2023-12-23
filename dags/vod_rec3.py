@@ -1,3 +1,4 @@
+#최종 dag 코드
 import csv
 import json
 import pandas as pd
@@ -20,152 +21,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
 
 
-# 기본 설정
-default_args = {
-    'owner': 'admin',
-    'retries': 5,
-    'retry_delay': timedelta(minutes=10)
-}
-
-local_tz = pendulum.timezone("Asia/Seoul")
-
-
-# 주차 정보 불러오기 및 새로운 주차정보 저장
-def week_info_s3(**context):
-    s3_hook = S3Hook(aws_conn_id='aws_default')
-
-    # S3에 파일이 존재하는지 확인
-    file_exists = s3_hook.check_for_key('week_info/week_info.json', 'hello00.net-airflow')
-
-
-    #파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 읽어오기
-    if not file_exists:
-        logging.info("*****파일 존재하지 않으므로 새로생성*****")
-        new_json = {"columns": ["week_info"],"values": [40]}
-        updated_json_data = json.dumps(new_json, indent=2)
-        current_week=new_json["values"][0]
-        s3_hook.load_string(updated_json_data, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
-
-    else:
-        logging.info("*****파일 존재. 기존 파일 읽어옴*****")
-        existing_data = s3_hook.read_key('week_info/week_info.json', 'hello00.net-airflow')
-        existing_json = json.loads(existing_data)
-        #이전 주차 정보 읽기
-        current_week=existing_json["values"][0] + 1
-
-        #기존 주차 정보 업데이트
-        existing_json["values"] = [current_week]
-        updated_json = json.dumps(existing_json, indent=2)
-        s3_hook.load_string(updated_json, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
-    
-    logging.info("*****현재 week 정보 받아옴*****")
-
-    logging.info(current_week)
-    context["task_instance"].xcom_push(key="current_week", value=current_week)
-
-
-# MySQL 데이터베이스로부터 데이터를 가져오는 함수
-def mysql_hook(**context):
-    
-    current_week = context["task_instance"].xcom_pull(task_ids="week_info", key="current_week")
-    logging.info("데이터베이스에서 데이터 가져오기")
-    
-    hook = MySqlHook.get_hook(conn_id="mysql-01")  # 미리 정의한 MySQL connection 적용
-    connection = hook.get_conn()  # connection 하기
-    cursor = connection.cursor()  # cursor 객체 만들기
-    cursor.execute("use vod_rec")  # SQL 문 수행
-
-
-
-    users = pd.read_sql('select * from userinfo', connection)
-    vods = pd.read_sql(f'select * from vods_sumut where week(log_dt)<={current_week}', connection)
-    conts = pd.read_sql(f'select * from contlog where week(log_dt)<={current_week}', connection)
-    program_info_all = pd.read_sql('select * from vodinfo', connection)
-
-    logging.info(users)
-    logging.info(vods)
-    logging.info(conts)
-    logging.info(program_info_all)
-
-    context["task_instance"].xcom_push(key="users", value=users)
-    context["task_instance"].xcom_push(key="vods", value=vods)
-    context["task_instance"].xcom_push(key="conts", value=conts)
-    context["task_instance"].xcom_push(key="program_info_all", value=program_info_all)
-    context["task_instance"].xcom_push(key="program_info_all", value=program_info_all)
-
-    connection.close()
-
-
-# 데이터 전처리 함수
-def data_preprocessing(**context):
-    logging.info("데이터 전처리")
-
-    # mysql_hook 함수에서 사용했던 변수 불러오기
-    users = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="users")
-    vods = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="vods")
-    conts = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="conts")
-    program_info_all = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="program_info_all")
-
-
-    # 전처리 시작
-    # e_bool == 0 인 데이터만 뽑기
-    vod_log = vods[vods['e_bool']==0][['subsr_id', 'program_id', 'program_name', 'episode_num', 'log_dt', 'use_tms', 'disp_rtm_sec', 'count_watch', 'month']]
-    cont_log = conts[conts['e_bool']==0][['subsr_id', 'program_id', 'program_name', 'episode_num', 'log_dt', 'month']]
-    vod_info = program_info_all[program_info_all['e_bool']==0][['program_id','program_name', 'ct_cl', 'program_genre', 'release_date', 'age_limit']]
-    user_info = users.copy()
-
-    vod_log['use_tms_ratio'] = vod_log['use_tms'] / vod_log['disp_rtm_sec']
-    vod_log['log_dt'] = pd.to_datetime(vod_log['log_dt'])
-    cont_log['log_dt'] = pd.to_datetime(cont_log['log_dt'])
-    cont_log['recency'] = (cont_log['log_dt'].max() - cont_log['log_dt']).dt.days # 최근성
-
-    log = pd.concat([vod_log[['subsr_id', 'program_id']], cont_log[['subsr_id', 'program_id']]]).drop_duplicates().reset_index(drop=True)
-    log = log.merge(cont_log.groupby(['subsr_id', 'program_id'])[['program_name']].count().reset_index().rename(columns={'program_name':'click_cnt'}), how='left')
-    log = log.merge(cont_log.groupby(['subsr_id', 'program_id'])[['recency']].min().reset_index().rename(columns={'recency':'click_recency'}), how='left')
-
-    # (subsr_id, program_id) 쌍에 대해 하나의 평점만 남겨야 함
-    # => use_tms_ratio 는 최대값으로 남기고, 시청 count도 해서 추가한다.
-    log = log.merge(vod_log.groupby(['subsr_id', 'program_id'])[['use_tms_ratio']].max().reset_index().rename(columns={'use_tms_ratio':'watch_tms_max'}), how='left')
-    log = log.merge(vod_log.groupby(['subsr_id', 'program_id'])[['use_tms_ratio']].count().reset_index().rename(columns={'use_tms_ratio':'watch_cnt'}), how='left')
-
-    replace_value = log['click_cnt'].quantile(0.95) # 95% 로 최대값 고정
-    log.loc[log[log['click_cnt'] > replace_value].index, 'click_cnt'] = replace_value
-
-    log['click_recency'] = log['click_recency'].max() - log['click_recency']
-
-
-    # 시청기록만 사용
-    replace_value = log['watch_cnt'].quantile(0.95)  # 95% 로 최대값 고정
-    log.loc[log[log['watch_cnt'] > replace_value].index, 'watch_cnt'] = replace_value
-
-    log_rating = log.copy()
-    log_rating['rating'] = log_rating['watch_tms_max']
-    log_rating.loc[log_rating[log_rating['rating']>0].index, '시청여부'] = 1
-    rating_df = log_rating[['subsr_id', 'program_id', 'rating', '시청여부']]
-    vod_info['program_id'] = vod_info['program_id'].astype('int')
-    rating_df['program_id'] = rating_df['program_id'].astype('int')
-    vod_info = vod_info.merge(log_rating.groupby(['program_id', 'subsr_id'])[['click_cnt']].count().groupby('program_id').count().reset_index(), how='left')
-
-    max_subsr_id = rating_df['subsr_id'].max()
-    user_info = user_info[user_info['subsr_id'] < max_subsr_id]
-    
-    logging.info(vod_info)
-    logging.info(rating_df)
-
-    context["task_instance"].xcom_push(key="rating_df", value=rating_df)
-    context["task_instance"].xcom_push(key="vod_info", value=vod_info)
-    context["task_instance"].xcom_push(key="user_info", value=user_info)
-
-
-# 모델 적용 및 성능추출
-def model_running(**context):
-    rating_df = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="rating_df")
-    vod_info = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="vod_info")
-    user_info = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="user_info")
-    # 모델 함수
-    logging.info("모델 적용 및 성능평가")
-
-    class LightFM_Model:
+# 모델 클래스
+class LightFM_Model:
         def __init__(self, data, vod_info, user_info, param_loss='logistic', param_components=10, param_epochs=10):
             self.vod_info = vod_info
             self.user_info = user_info
@@ -317,9 +174,154 @@ def model_running(**context):
             # fitting
             model = self.fit(train_interactions, train_weights)
             return model
+
+
+# 기본 설정
+default_args = {
+    'owner': 'admin',
+    'retries': 5,
+    'retry_delay': timedelta(minutes=10)
+}
+
+local_tz = pendulum.timezone("Asia/Seoul")
+
+
+# 주차 정보 불러오기 및 새로운 주차정보 저장
+def week_info_s3(**context):
+    s3_hook = S3Hook(aws_conn_id='aws_default')
+
+    # S3에 파일이 존재하는지 확인
+    file_exists = s3_hook.check_for_key('week_info/week_info.json', 'hello00.net-airflow')
+
+
+    #파일이 존재하지 않을 경우 새 파일 생성, 존재할 경우에는 읽어오기
+    if not file_exists:
+        logging.info("*****파일 존재하지 않으므로 새로생성*****")
+        new_json = {"columns": ["week_info"],"values": [40]}
+        updated_json_data = json.dumps(new_json, indent=2)
+        current_week=new_json["values"][0]
+        s3_hook.load_string(updated_json_data, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
+
+    else:
+        logging.info("*****파일 존재. 기존 파일 읽어옴*****")
+        existing_data = s3_hook.read_key('week_info/week_info.json', 'hello00.net-airflow')
+        existing_json = json.loads(existing_data)
+        #이전 주차 정보 읽기
+        current_week=existing_json["values"][0] + 1
+
+        #기존 주차 정보 업데이트
+        existing_json["values"] = [current_week]
+        updated_json = json.dumps(existing_json, indent=2)
+        s3_hook.load_string(updated_json, 'week_info/week_info.json', 'hello00.net-airflow', replace=True)
+    
+    logging.info("*****현재 week 정보 받아옴*****")
+
+    logging.info(current_week)
+    context["task_instance"].xcom_push(key="current_week", value=current_week)
+
+
+# MySQL 데이터베이스로부터 데이터를 가져오는 함수
+def mysql_hook(**context):
+    
+    current_week = context["task_instance"].xcom_pull(task_ids="week_info", key="current_week")
+    logging.info("데이터베이스에서 데이터 가져오기")
+    
+    hook = MySqlHook.get_hook(conn_id="mysql-01")  # 미리 정의한 MySQL connection 적용
+    connection = hook.get_conn()  # connection 하기
+    cursor = connection.cursor()  # cursor 객체 만들기
+    cursor.execute("use vod_rec")  # SQL 문 수행
+
+
+
+    users = pd.read_sql('select * from userinfo', connection)
+    vods = pd.read_sql(f'select * from vods_sumut where week(log_dt)<={current_week}', connection)
+    conts = pd.read_sql(f'select * from contlog where week(log_dt)<={current_week}', connection)
+    program_info_all = pd.read_sql('select * from vodinfo', connection)
+
+    logging.info(users)
+    logging.info(vods)
+    logging.info(conts)
+    logging.info(program_info_all)
+
+    context["task_instance"].xcom_push(key="users", value=users)
+    context["task_instance"].xcom_push(key="vods", value=vods)
+    context["task_instance"].xcom_push(key="conts", value=conts)
+    context["task_instance"].xcom_push(key="program_info_all", value=program_info_all)
+    context["task_instance"].xcom_push(key="program_info_all", value=program_info_all)
+
+    connection.close()
+
+
+# 데이터 전처리 함수
+def data_preprocessing(**context):
+    logging.info("데이터 전처리")
+
+    # mysql_hook 함수에서 사용했던 변수 불러오기
+    users = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="users")
+    vods = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="vods")
+    conts = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="conts")
+    program_info_all = context["task_instance"].xcom_pull(task_ids="mysql_hook", key="program_info_all")
+
+
+    # 전처리 시작
+    # e_bool == 0 인 데이터만 뽑기
+    vod_log = vods[vods['e_bool']==0][['subsr_id', 'program_id', 'program_name', 'episode_num', 'log_dt', 'use_tms', 'disp_rtm_sec', 'count_watch', 'month']]
+    cont_log = conts[conts['e_bool']==0][['subsr_id', 'program_id', 'program_name', 'episode_num', 'log_dt', 'month']]
+    vod_info = program_info_all[program_info_all['e_bool']==0][['program_id','program_name', 'ct_cl', 'program_genre', 'release_date', 'age_limit']]
+    user_info = users.copy()
+
+    vod_log['use_tms_ratio'] = vod_log['use_tms'] / vod_log['disp_rtm_sec']
+    vod_log['log_dt'] = pd.to_datetime(vod_log['log_dt'])
+    cont_log['log_dt'] = pd.to_datetime(cont_log['log_dt'])
+    cont_log['recency'] = (cont_log['log_dt'].max() - cont_log['log_dt']).dt.days # 최근성
+
+    log = pd.concat([vod_log[['subsr_id', 'program_id']], cont_log[['subsr_id', 'program_id']]]).drop_duplicates().reset_index(drop=True)
+    log = log.merge(cont_log.groupby(['subsr_id', 'program_id'])[['program_name']].count().reset_index().rename(columns={'program_name':'click_cnt'}), how='left')
+    log = log.merge(cont_log.groupby(['subsr_id', 'program_id'])[['recency']].min().reset_index().rename(columns={'recency':'click_recency'}), how='left')
+
+    # (subsr_id, program_id) 쌍에 대해 하나의 평점만 남겨야 함
+    # => use_tms_ratio 는 최대값으로 남기고, 시청 count도 해서 추가한다.
+    log = log.merge(vod_log.groupby(['subsr_id', 'program_id'])[['use_tms_ratio']].max().reset_index().rename(columns={'use_tms_ratio':'watch_tms_max'}), how='left')
+    log = log.merge(vod_log.groupby(['subsr_id', 'program_id'])[['use_tms_ratio']].count().reset_index().rename(columns={'use_tms_ratio':'watch_cnt'}), how='left')
+
+    replace_value = log['click_cnt'].quantile(0.95) # 95% 로 최대값 고정
+    log.loc[log[log['click_cnt'] > replace_value].index, 'click_cnt'] = replace_value
+
+    log['click_recency'] = log['click_recency'].max() - log['click_recency']
+
+
+    # 시청기록만 사용
+    replace_value = log['watch_cnt'].quantile(0.95)  # 95% 로 최대값 고정
+    log.loc[log[log['watch_cnt'] > replace_value].index, 'watch_cnt'] = replace_value
+
+    log_rating = log.copy()
+    log_rating['rating'] = log_rating['watch_tms_max']
+    log_rating.loc[log_rating[log_rating['rating']>0].index, '시청여부'] = 1
+    rating_df = log_rating[['subsr_id', 'program_id', 'rating', '시청여부']]
+    vod_info['program_id'] = vod_info['program_id'].astype('int')
+    rating_df['program_id'] = rating_df['program_id'].astype('int')
+    vod_info = vod_info.merge(log_rating.groupby(['program_id', 'subsr_id'])[['click_cnt']].count().groupby('program_id').count().reset_index(), how='left')
+
+    max_subsr_id = rating_df['subsr_id'].max()
+    user_info = user_info[user_info['subsr_id'] < max_subsr_id]
+    
+    logging.info(vod_info)
+    logging.info(rating_df)
+
+    context["task_instance"].xcom_push(key="rating_df", value=rating_df)
+    context["task_instance"].xcom_push(key="vod_info", value=vod_info)
+    context["task_instance"].xcom_push(key="user_info", value=user_info)
+
+
+# 모델 적용 및 성능추출 & pickle파일 s3에 저장
+def model_running(**context):
+    rating_df = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="rating_df")
+    vod_info = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="vod_info")
+    user_info = context["task_instance"].xcom_pull(task_ids="data_preprocessing", key="user_info")
+
+    
     # 모델 클래스 객체 생성하고, 성능 출력하는 코드
     lfm_model = LightFM_Model(rating_df, vod_info, user_info, 'warp', 30, 10)
-
 
     Precision = round(lfm_model.precision, 5)
     Recall = round(lfm_model.recall, 5)
@@ -334,7 +336,15 @@ def model_running(**context):
     context["task_instance"].xcom_push(key="MAR", value=MAR)
     context["task_instance"].xcom_push(key="test_Diversity", value=test_Diversity)
     context["task_instance"].xcom_push(key="all_Diversity", value=all_Diversity)
-    context["task_instance"].xcom_push(key="lfm_model", value=lfm_model)
+
+
+
+    logging.info("피클파일 교체")
+    with open('model_lightfm.pkl', 'wb') as f:
+        pickle.dump(lfm_model, f)
+    logging.info("피클생성 완료")
+    s3_hook = S3Hook(aws_conn_id='aws_default')
+    s3_hook.load_file('model_lightfm.pkl', 'model_lightfm.pkl', 'hello00.net-model', replace=True)
 
 
 # 성능 S3에 적재
@@ -387,37 +397,15 @@ def convert_to_json(**context):
         s3_hook.load_string(updated_json_data, f'model_accuracy/{metric_name.lower()}.json', 'hello00.net-airflow', replace=True)
 
 
-# 피클 파일로 S3에 모델 업데이트
-def model_update(**context):
-    lfm_model = context["task_instance"].xcom_pull(task_ids="model_running", key="lfm_model")
-
-    pickle_file_path = 'model_lightfm.pkl'
-
-    with open('pickle_file_path', 'wb') as f:
-        pickle.dump(lfm_model, f)
-
-    s3_hook = S3Hook(aws_conn_id='aws_default')
-
-    s3_bucket_name = 'hello00.net-model'
-    s3_key = 'model_lightfm.pkl'
-
-    # S3에 피클 파일 업로드
-    s3_hook.load_file(
-        filename=pickle_file_path,
-        key=s3_key,
-        bucket_name=s3_bucket_name,
-        replace=True  # 기존 파일 덮어쓰기
-    )
-
 
 
 
 # DAG 설정
 with DAG(
-    dag_id="vod_rec_v3",
+    dag_id="VOD_Recommendation",
     default_args=default_args,
     start_date=datetime(2023, 12, 11, tzinfo=local_tz),
-    schedule_interval='@once'  # 매주 월요일 00:00 마다 실행
+    schedule_interval='0 0 * * 1'  # 매주 월요일 00:00 마다 실행
 ) as dag:
     week_info = PythonOperator(
     task_id="week_info",
@@ -439,11 +427,8 @@ with DAG(
         task_id="convert_to_json",
         python_callable=convert_to_json
     )
-    # pickle =PythonOperator(
-    #     task_id="model_update",
-    #     python_callable=pickle_load
-    # )
+
 
     week_info >> database >> data_preprocess >> model_apply >> dashboard_data_save
-    # week_info >> database >> data_preprocess >> model_apply >> pickle
+
 
